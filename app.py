@@ -1,4 +1,5 @@
-from typing import Dict, Iterable, List, Tuple
+from pathlib import Path
+from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -15,29 +16,23 @@ from src.config import (
 from src.data_utils import load_uploaded_data, prepare_fund_data
 from src.ekf_model import estimate_daily_fund_states
 
-
-OUTPUT_DIR = "output"
-
-
-def ensure_output_dir() -> None:
-    import os
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+OUTPUT_DIR = Path("output")
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 
 def save_outputs(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df):
-    ensure_output_dir()
-    daily_leverage_df.to_csv(f"{OUTPUT_DIR}/daily_leverage.csv", index=False)
-    daily_allocation_df.to_csv(f"{OUTPUT_DIR}/daily_allocation.csv", index=False)
-    daily_duration_df.to_csv(f"{OUTPUT_DIR}/daily_duration.csv", index=False)
-    duration_median_df.to_csv(f"{OUTPUT_DIR}/duration_median.csv", index=False)
+    daily_leverage_df.to_csv(OUTPUT_DIR / "daily_leverage.csv", index=False)
+    daily_allocation_df.to_csv(OUTPUT_DIR / "daily_allocation.csv", index=False)
+    daily_duration_df.to_csv(OUTPUT_DIR / "daily_duration.csv", index=False)
+    duration_median_df.to_csv(OUTPUT_DIR / "duration_median.csv", index=False)
 
 
 def parse_observation_noise_matrix(raw_matrix) -> np.ndarray:
     arr = np.asarray(raw_matrix, dtype=float)
-    if arr.shape == (3,):
+    if arr.size == 3:
         arr = np.diag(arr)
     if arr.shape != (3, 3):
-        raise ValueError("观测噪声矩阵必须是 3x3 矩阵。")
+        raise ValueError("观测噪声矩阵必须为 3x3 矩阵或长度为 3 的对角向量。")
     return arr
 
 
@@ -50,7 +45,8 @@ def process_all_funds(
     weight_process_noise: float = DEFAULT_WEIGHT_PROCESS_NOISE,
     observation_noise_matrix=None,
 ):
-    duration_map = duration_map or DEFAULT_DURATION_MAP.copy()
+    if duration_map is None:
+        duration_map = DEFAULT_DURATION_MAP.copy()
     if observation_noise_matrix is None:
         observation_noise_matrix = DEFAULT_OBSERVATION_NOISE_MATRIX.copy()
 
@@ -76,12 +72,9 @@ def process_all_funds(
     all_daily_df = all_daily_df.sort_values(["fund_id", "date"]).reset_index(drop=True)
 
     daily_leverage_df = all_daily_df[["fund_id", "date", "leverage"]].copy()
-
     alloc_columns = [c for c in all_daily_df.columns if c.endswith("_weight")]
     daily_allocation_df = all_daily_df[["fund_id", "date"] + alloc_columns].copy()
-
     daily_duration_df = all_daily_df[["fund_id", "date", "asset_duration", "nav_duration", "leverage"]].copy()
-
     duration_median_df = (
         all_daily_df.groupby("date", as_index=False)[["asset_duration", "nav_duration"]]
         .median()
@@ -92,18 +85,17 @@ def process_all_funds(
 
 
 def render_duration_config() -> Dict[str, float]:
-    st.subheader("参数设置：七档债券指数久期")
+    st.subheader("步骤2：参数设置 - 七档债券指数久期")
     cols = st.columns(2)
     duration_map = {}
     for idx, key in enumerate(DEFAULT_DURATION_MAP.keys()):
-        value = DEFAULT_DURATION_MAP[key]
         col = cols[idx % 2]
         with col:
             duration_map[key] = st.number_input(
                 f"{key} 久期（年）",
                 min_value=0.0,
                 max_value=100.0,
-                value=float(value),
+                value=float(DEFAULT_DURATION_MAP[key]),
                 step=0.01,
                 format="%.2f",
                 key=f"duration_{key}",
@@ -112,7 +104,7 @@ def render_duration_config() -> Dict[str, float]:
 
 
 def render_model_config() -> Tuple[float, float, np.ndarray]:
-    st.subheader("模型参数设置")
+    st.subheader("步骤2：参数设置 - EKF 模型参数")
     leverage_process_noise = st.number_input(
         "杠杆率变化参数",
         min_value=0.0,
@@ -152,7 +144,7 @@ def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, du
         "展示基金（可筛选）",
         options=funds,
         default=funds,
-        help="分析过程会同步处理全部基金，但结果可以按基金筛选展示。",
+        help="分析过程会同步处理全部基金，但结果可按基金筛选展示。",
     )
 
     if not display_funds:
@@ -174,12 +166,12 @@ def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, du
     )
 
     st.subheader("关键指标概览")
-    col1, col2, col3 = st.columns(3)
-    with col1:
+    c1, c2, c3 = st.columns(3)
+    with c1:
         st.metric("已处理基金数", len(display_funds))
-    with col2:
+    with c2:
         st.metric("平均杠杆率", round(float(summary["avg_leverage"].mean()), 4) if not summary.empty else 0.0)
-    with col3:
+    with c3:
         st.metric("平均组合久期", round(float(summary["avg_asset_duration"].mean()), 2) if not summary.empty else 0.0)
 
     st.dataframe(summary, use_container_width=True)
@@ -237,11 +229,12 @@ def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, du
 def main():
     st.set_page_config(page_title="Bond Fund EKF Duration Estimator", layout="wide")
     st.title("基于 EKF 的债券基金久期动态估计系统")
-    st.caption("分步骤交互：数据上传 → 参数设置 → 执行分析 → 结果呈现；并支持多基金批量运行。")
+    st.caption("分步骤交互：数据上传 → 参数设置 → 执行分析 → 结果呈现；支持多基金批量执行。")
 
-    nav_file = st.sidebar.file_uploader("步骤1：上传基金净值 CSV", type=["csv"], key="nav_file")
-    index_file = st.sidebar.file_uploader("步骤1：上传债券指数 CSV", type=["csv"], key="index_file")
-    report_file = st.sidebar.file_uploader("步骤1：上传基金披露 CSV", type=["csv"], key="report_file")
+    st.sidebar.header("步骤1：数据上传")
+    nav_file = st.sidebar.file_uploader("上传基金净值 CSV", type=["csv"], key="nav_file")
+    index_file = st.sidebar.file_uploader("上传债券指数 CSV", type=["csv"], key="index_file")
+    report_file = st.sidebar.file_uploader("上传基金披露 CSV", type=["csv"], key="report_file")
 
     if not (nav_file and index_file and report_file):
         st.info("请先在左侧完成步骤1的数据上传：fund_nav.csv、bond_index.csv、fund_report.csv。")
@@ -249,16 +242,25 @@ def main():
 
     nav_df, index_df, report_df = load_uploaded_data(nav_file, index_file, report_file)
     funds = sorted(nav_df["fund_id"].unique().tolist())
-
     if not funds:
         st.warning("未找到有效基金代码，请检查净值数据。")
         return
 
     st.sidebar.success(f"已加载 {len(funds)} 只基金，准备进入参数设置。")
-    st.sidebar.caption("执行模式：一次性处理全部基金，不再逐只选择单基金运行。")
+    st.sidebar.caption("执行模式：一次性处理全部基金，不逐只选择单基金运行。")
 
     st.subheader("步骤1：已上传数据")
-    st.dataframe(pd.DataFrame({"基金数": [len(funds)], "净值记录数": [len(nav_df)], "指数记录数": [len(index_df)], "披露记录数": [len(report_df)]}), use_container_width=True)
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "基金数": [len(funds)],
+                "净值记录数": [len(nav_df)],
+                "指数记录数": [len(index_df)],
+                "披露记录数": [len(report_df)],
+            }
+        ),
+        use_container_width=True,
+    )
 
     duration_map = render_duration_config()
     leverage_process_noise, weight_process_noise, observation_noise_matrix = render_model_config()
@@ -266,7 +268,6 @@ def main():
     st.subheader("步骤3：执行分析")
     st.info("执行前确认：全部基金会按同一参数同步计算，避免逐个基金重复选择。")
     run_analysis = st.button("执行全部基金分析", type="primary")
-
     if not run_analysis:
         st.stop()
 
@@ -286,7 +287,6 @@ def main():
 
     save_outputs(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df)
     st.success(f"分析已完成并保存到 {OUTPUT_DIR} 目录。")
-
     render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df, funds)
 
 
