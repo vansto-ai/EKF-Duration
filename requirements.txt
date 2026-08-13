@@ -1,0 +1,8 @@
+# Bond Fund Duration EKF Estimator
+
+streamlit>=1.36.0
+pandas>=2.0.0
+numpy>=1.26.0
+scipy>=1.11.0
+filterpy>=1.4.5
+plotly>=5.22.0
