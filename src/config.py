@@ -1,5 +1,7 @@
 from typing import List
 
+import numpy as np
+
 # 默认期限久期配置，单位：年
 DEFAULT_DURATION_MAP = {
     "0_1Y": 0.50,
@@ -30,3 +32,14 @@ ALLOCATION_COLUMNS: List[str] = [
     "10_25Y_weight",
     "30Y_weight",
 ]
+
+DEFAULT_LEVERAGE_PROCESS_NOISE = 1e-4
+DEFAULT_WEIGHT_PROCESS_NOISE = 1e-6
+DEFAULT_OBSERVATION_NOISE_MATRIX = np.array(
+    [
+        [1e-4, 0.0, 0.0],
+        [0.0, 1e-4, 0.0],
+        [0.0, 0.0, 1e-4],
+    ],
+    dtype=float,
+)
