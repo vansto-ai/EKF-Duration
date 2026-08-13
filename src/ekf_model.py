@@ -3,7 +3,12 @@ import pandas as pd
 from filterpy.kalman import ExtendedKalmanFilter
 from scipy.optimize import minimize
 
-from src.config import DEFAULT_DURATION_MAP
+from src.config import (
+    DEFAULT_DURATION_MAP,
+    DEFAULT_LEVERAGE_PROCESS_NOISE,
+    DEFAULT_OBSERVATION_NOISE_MATRIX,
+    DEFAULT_WEIGHT_PROCESS_NOISE,
+)
 
 
 def solve_entropy_initial_weights(target_duration: float, duration_map: dict, eps: float = 1e-12):
@@ -16,8 +21,7 @@ def solve_entropy_initial_weights(target_duration: float, duration_map: dict, ep
     n = len(D)
 
     if target_duration is None or not np.isfinite(target_duration):
-        out = np.full(n, 1.0 / n)
-        return out
+        return np.full(n, 1.0 / n)
 
     def objective(a):
         a = np.clip(a, eps, None)
@@ -84,9 +88,27 @@ class BondFundEKF:
     - 半年度久期观测：sum(a_i * D_i)
     """
 
-    def __init__(self, duration_map: dict, initial_duration: float = None):
+    def __init__(
+        self,
+        duration_map: dict,
+        initial_duration: float = None,
+        leverage_process_noise: float = DEFAULT_LEVERAGE_PROCESS_NOISE,
+        weight_process_noise: float = DEFAULT_WEIGHT_PROCESS_NOISE,
+        observation_noise_matrix=None,
+    ):
         self.duration_map = np.array(list(duration_map.values()), dtype=float)
         self.keys = list(duration_map.keys())
+        self.leverage_process_noise = float(leverage_process_noise)
+        self.weight_process_noise = float(weight_process_noise)
+
+        if observation_noise_matrix is None:
+            observation_noise_matrix = DEFAULT_OBSERVATION_NOISE_MATRIX.copy()
+        observation_noise_matrix = np.asarray(observation_noise_matrix, dtype=float)
+        if observation_noise_matrix.size == 3:
+            observation_noise_matrix = np.diag(observation_noise_matrix)
+        if observation_noise_matrix.shape != (3, 3):
+            raise ValueError("观测噪声矩阵必须为 3x3 矩阵或长度为 3 的对角向量。")
+        self.observation_noise_matrix = observation_noise_matrix
 
         base_weight = solve_entropy_initial_weights(
             target_duration=initial_duration if initial_duration is not None else np.median(self.duration_map),
@@ -98,12 +120,15 @@ class BondFundEKF:
         self.ekf = ExtendedKalmanFilter(dim_x=8, dim_z=1)
         self.ekf.x = np.asarray(init_x, dtype=float)
         self.ekf.P = np.eye(8, dtype=float) * 1e-2
-        self.ekf.Q = np.diag([1e-4] + [1e-6] * 7)
+        self.ekf.Q = np.diag([self.leverage_process_noise] + [self.weight_process_noise] * 7)
         self.ekf.R = np.eye(1, dtype=float) * 1e-4
         self.ekf.F = np.eye(8, dtype=float)
 
     def _project_state(self):
         self.ekf.x = project_state(self.ekf.x)
+
+    def _set_observation_noise(self, idx: int):
+        self.ekf.R = np.eye(1, dtype=float) * float(self.observation_noise_matrix[idx, idx])
 
     def predict(self):
         """
@@ -120,6 +145,7 @@ class BondFundEKF:
         基金收益观测更新：
         z_t = w_t * sum(a_i * R_i,t) + alpha + eps
         """
+        self._set_observation_noise(0)
         index_returns = np.asarray(index_returns, dtype=float)
 
         def hx(x):
@@ -144,6 +170,8 @@ class BondFundEKF:
         季度杠杆率观测更新：
         z_w = w_t + eta
         """
+        self._set_observation_noise(1)
+
         def hx(x):
             return np.array([x[0]], dtype=float)
 
@@ -161,6 +189,8 @@ class BondFundEKF:
         半年度久期观测更新：
         z_D = sum(a_i * D_i) + eta
         """
+        self._set_observation_noise(2)
+
         def hx(x):
             a = x[1:]
             return np.array([np.dot(a, self.duration_map)], dtype=float)
@@ -188,7 +218,14 @@ class BondFundEKF:
         }
 
 
-def estimate_daily_fund_states(fund_df: pd.DataFrame, duration_map: dict, report_df: pd.DataFrame):
+def estimate_daily_fund_states(
+    fund_df: pd.DataFrame,
+    duration_map: dict,
+    report_df: pd.DataFrame,
+    leverage_process_noise: float = DEFAULT_LEVERAGE_PROCESS_NOISE,
+    weight_process_noise: float = DEFAULT_WEIGHT_PROCESS_NOISE,
+    observation_noise_matrix=None,
+):
     """
     对单个基金执行完整的日度 EKF 滤波估计。
     重点：
@@ -199,6 +236,9 @@ def estimate_daily_fund_states(fund_df: pd.DataFrame, duration_map: dict, report
     model = BondFundEKF(
         duration_map=duration_map,
         initial_duration=get_initial_duration_from_report(report_df, duration_map),
+        leverage_process_noise=leverage_process_noise,
+        weight_process_noise=weight_process_noise,
+        observation_noise_matrix=observation_noise_matrix,
     )
 
     rows = []
@@ -207,15 +247,18 @@ def estimate_daily_fund_states(fund_df: pd.DataFrame, duration_map: dict, report
         model.predict()
 
         if np.isfinite(row.get("return", 0.0)):
-            index_vector = np.array([
-                row.get("0_1Y_ret", 0.0),
-                row.get("1_3Y_ret", 0.0),
-                row.get("3_5Y_ret", 0.0),
-                row.get("5_7Y_ret", 0.0),
-                row.get("7_10Y_ret", 0.0),
-                row.get("10_25Y_ret", 0.0),
-                row.get("30Y_ret", 0.0),
-            ], dtype=float)
+            index_vector = np.array(
+                [
+                    row.get("0_1Y_ret", 0.0),
+                    row.get("1_3Y_ret", 0.0),
+                    row.get("3_5Y_ret", 0.0),
+                    row.get("5_7Y_ret", 0.0),
+                    row.get("7_10Y_ret", 0.0),
+                    row.get("10_25Y_ret", 0.0),
+                    row.get("30Y_ret", 0.0),
+                ],
+                dtype=float,
+            )
             model.update_return(row["return"], index_vector)
 
         leverage_obs = row.get("leverage_obs")
@@ -227,20 +270,22 @@ def estimate_daily_fund_states(fund_df: pd.DataFrame, duration_map: dict, report
             model.update_duration(float(duration_obs))
 
         state = model.current_state()
-        rows.append({
-            "fund_id": row["fund_id"],
-            "date": row["date"],
-            "leverage": state["leverage"],
-            "asset_duration": state["asset_duration"],
-            "nav_duration": state["nav_duration"],
-            "0_1Y_weight": state["weights"][0],
-            "1_3Y_weight": state["weights"][1],
-            "3_5Y_weight": state["weights"][2],
-            "5_7Y_weight": state["weights"][3],
-            "7_10Y_weight": state["weights"][4],
-            "10_25Y_weight": state["weights"][5],
-            "30Y_weight": state["weights"][6],
-        })
+        rows.append(
+            {
+                "fund_id": row["fund_id"],
+                "date": row["date"],
+                "leverage": state["leverage"],
+                "asset_duration": state["asset_duration"],
+                "nav_duration": state["nav_duration"],
+                "0_1Y_weight": state["weights"][0],
+                "1_3Y_weight": state["weights"][1],
+                "3_5Y_weight": state["weights"][2],
+                "5_7Y_weight": state["weights"][3],
+                "7_10Y_weight": state["weights"][4],
+                "10_25Y_weight": state["weights"][5],
+                "30Y_weight": state["weights"][6],
+            }
+        )
 
     return pd.DataFrame(rows)
 
