@@ -33,13 +33,14 @@ ALLOCATION_COLUMNS: List[str] = [
     "30Y_weight",
 ]
 
-DEFAULT_LEVERAGE_PROCESS_NOISE = 1e-4
-DEFAULT_WEIGHT_PROCESS_NOISE = 1e-6
+# 按照图示默认值设置
+DEFAULT_LEVERAGE_PROCESS_NOISE = 0.05
+DEFAULT_WEIGHT_PROCESS_NOISE = 0.05
 DEFAULT_OBSERVATION_NOISE_MATRIX = np.array(
     [
-        [1e-4, 0.0, 0.0],
-        [0.0, 1e-4, 0.0],
-        [0.0, 0.0, 1e-4],
+        [1e-6, 0.0, 0.0],
+        [0.0, 0.0025, 0.0],
+        [0.0, 0.0, 0.2],
     ],
     dtype=float,
 )
