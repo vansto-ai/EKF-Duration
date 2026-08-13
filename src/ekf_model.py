@@ -15,7 +15,6 @@ def solve_entropy_initial_weights(target_duration: float, duration_map: dict, ep
     D = np.array(list(duration_map.values()), dtype=float)
     n = len(D)
 
-    # 如果没有目标久期，则退化到均匀分布
     if target_duration is None or not np.isfinite(target_duration):
         out = np.full(n, 1.0 / n)
         return out
@@ -53,7 +52,6 @@ def solve_entropy_initial_weights(target_duration: float, duration_map: dict, ep
     except Exception:
         pass
 
-    # 兜底：均匀分布
     return np.full(n, 1.0 / n)
 
 
@@ -90,13 +88,11 @@ class BondFundEKF:
         self.duration_map = np.array(list(duration_map.values()), dtype=float)
         self.keys = list(duration_map.keys())
 
-        # 使用最小熵方法生成初始期限权重
         base_weight = solve_entropy_initial_weights(
             target_duration=initial_duration if initial_duration is not None else np.median(self.duration_map),
             duration_map=duration_map,
         )
 
-        # 初始状态：杠杆率约为 1.05，期限权重为最小熵的结果
         init_x = np.concatenate(([1.05], base_weight))
 
         self.ekf = ExtendedKalmanFilter(dim_x=8, dim_z=1)
@@ -126,13 +122,11 @@ class BondFundEKF:
         """
         index_returns = np.asarray(index_returns, dtype=float)
 
-        # 观测函数 h(x)
         def hx(x):
             w = x[0]
             a = x[1:]
             return np.array([w * np.dot(a, index_returns)], dtype=float)
 
-        # 观测雅可比 H
         def HJacobian(x):
             H = np.zeros((1, 8), dtype=float)
             w = x[0]
@@ -141,10 +135,8 @@ class BondFundEKF:
             H[0, 1:] = w * index_returns
             return H
 
-        self.ekf.hx = hx
-        self.ekf.H = HJacobian(self.ekf.x)
-        self.ekf.R = np.eye(1) * 1e-3
-        self.ekf.update(np.array([fund_return], dtype=float))
+        z = np.array([fund_return], dtype=float)
+        self.ekf.update(z, HJacobian, hx)
         self._project_state()
 
     def update_leverage(self, leverage_obs: float):
@@ -160,10 +152,8 @@ class BondFundEKF:
             H[0, 0] = 1.0
             return H
 
-        self.ekf.hx = hx
-        self.ekf.H = HJacobian(self.ekf.x)
-        self.ekf.R = np.eye(1) * 1e-4
-        self.ekf.update(np.array([leverage_obs], dtype=float))
+        z = np.array([leverage_obs], dtype=float)
+        self.ekf.update(z, HJacobian, hx)
         self._project_state()
 
     def update_duration(self, duration_obs: float):
@@ -180,10 +170,8 @@ class BondFundEKF:
             H[0, 1:] = self.duration_map
             return H
 
-        self.ekf.hx = hx
-        self.ekf.H = HJacobian(self.ekf.x)
-        self.ekf.R = np.eye(1) * 1e-3
-        self.ekf.update(np.array([duration_obs], dtype=float))
+        z = np.array([duration_obs], dtype=float)
+        self.ekf.update(z, HJacobian, hx)
         self._project_state()
 
     def current_state(self):
@@ -216,10 +204,8 @@ def estimate_daily_fund_states(fund_df: pd.DataFrame, duration_map: dict, report
     rows = []
 
     for _, row in fund_df.iterrows():
-        # 预测
         model.predict()
 
-        # 1) 日收益观测更新
         if np.isfinite(row.get("return", 0.0)):
             index_vector = np.array([
                 row.get("0_1Y_ret", 0.0),
@@ -232,12 +218,10 @@ def estimate_daily_fund_states(fund_df: pd.DataFrame, duration_map: dict, report
             ], dtype=float)
             model.update_return(row["return"], index_vector)
 
-        # 2) 季度杠杆率补充观测更新
         leverage_obs = row.get("leverage_obs")
         if pd.notna(leverage_obs):
             model.update_leverage(float(leverage_obs))
 
-        # 3) 半年久期补充观测更新
         duration_obs = row.get("duration_obs")
         if pd.notna(duration_obs):
             model.update_duration(float(duration_obs))
