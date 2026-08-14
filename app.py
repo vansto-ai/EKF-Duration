@@ -45,8 +45,7 @@ def process_all_funds(
     weight_process_noise: float = DEFAULT_WEIGHT_PROCESS_NOISE,
     observation_noise_matrix=None,
 ):
-    if duration_map is None:
-        duration_map = DEFAULT_DURATION_MAP.copy()
+    duration_map = duration_map or DEFAULT_DURATION_MAP.copy()
     if observation_noise_matrix is None:
         observation_noise_matrix = DEFAULT_OBSERVATION_NOISE_MATRIX.copy()
 
@@ -140,15 +139,22 @@ def render_model_config() -> Tuple[float, float, np.ndarray]:
 
 def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df, funds):
     st.subheader("步骤4：分析结果呈现")
+    default_selected = list(funds)
+    if "selected_funds" in st.session_state:
+        default_selected = [f for f in st.session_state["selected_funds"] if f in funds]
+        if not default_selected:
+            default_selected = list(funds)
+
     display_funds = st.multiselect(
         "展示基金（可筛选）",
         options=funds,
-        default=funds,
+        default=default_selected,
         help="分析过程会同步处理全部基金，但结果可按基金筛选展示。",
+        key="selected_funds",
     )
 
     if not display_funds:
-        st.info("未选择任何基金，结果视图为空。")
+        st.info("未选择任何基金，结果视图为空。当前分析结果已保留，可重新勾选基金查看。")
         return
 
     filtered_leverage = daily_leverage_df[daily_leverage_df["fund_id"].isin(display_funds)].copy()
@@ -231,6 +237,9 @@ def main():
     st.title("基于 EKF 的债券基金久期动态估计系统")
     st.caption("分步骤交互：数据上传 → 参数设置 → 执行分析 → 结果呈现；支持多基金批量执行。")
 
+    if "analysis_cache" not in st.session_state:
+        st.session_state.analysis_cache = None
+
     st.sidebar.header("步骤1：数据上传")
     nav_file = st.sidebar.file_uploader("上传基金净值 CSV", type=["csv"], key="nav_file")
     index_file = st.sidebar.file_uploader("上传债券指数 CSV", type=["csv"], key="index_file")
@@ -268,26 +277,39 @@ def main():
     st.subheader("步骤3：执行分析")
     st.info("执行前确认：全部基金会按同一参数同步计算，避免逐个基金重复选择。")
     run_analysis = st.button("执行全部基金分析", type="primary")
-    if not run_analysis:
-        st.stop()
 
-    daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df = process_all_funds(
-        nav_df,
-        index_df,
-        report_df,
-        duration_map=duration_map,
-        leverage_process_noise=leverage_process_noise,
-        weight_process_noise=weight_process_noise,
-        observation_noise_matrix=observation_noise_matrix,
-    )
+    if run_analysis:
+        daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df = process_all_funds(
+            nav_df,
+            index_df,
+            report_df,
+            duration_map=duration_map,
+            leverage_process_noise=leverage_process_noise,
+            weight_process_noise=weight_process_noise,
+            observation_noise_matrix=observation_noise_matrix,
+        )
+        if not daily_leverage_df.empty:
+            st.session_state.analysis_cache = {
+                "daily_leverage_df": daily_leverage_df,
+                "daily_allocation_df": daily_allocation_df,
+                "daily_duration_df": daily_duration_df,
+                "duration_median_df": duration_median_df,
+                "funds": funds,
+            }
+            save_outputs(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df)
+            st.success(f"分析已完成并保存到 {OUTPUT_DIR} 目录。")
 
-    if daily_leverage_df.empty:
-        st.warning("无有效结果，分析未执行成功。")
-        return
-
-    save_outputs(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df)
-    st.success(f"分析已完成并保存到 {OUTPUT_DIR} 目录。")
-    render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df, funds)
+    if st.session_state.analysis_cache is not None:
+        cache = st.session_state.analysis_cache
+        render_results(
+            cache["daily_leverage_df"],
+            cache["daily_allocation_df"],
+            cache["daily_duration_df"],
+            cache["duration_median_df"],
+            cache["funds"],
+        )
+    else:
+        st.info("请先执行全部基金分析，随后可在此处筛选显示基金结果。")
 
 
 if __name__ == "__main__":
