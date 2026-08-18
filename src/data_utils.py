@@ -107,7 +107,7 @@ def load_uploaded_data(nav_file, index_file, report_file):
 
 
 def prepare_fund_data(fund_id: str, nav_df: pd.DataFrame, index_df: pd.DataFrame, report_df: pd.DataFrame):
-    """为单只基金构造日度样本，并联结债券指数收益与季度/半年度披露观测。"""
+    """为单只基金构造日度样本，并将披露观测按最近有效交易日前向对齐到净值日期。"""
     fund_nav = nav_df[nav_df["fund_id"] == fund_id].copy()
     fund_nav["return"] = compute_daily_return(fund_nav["nav"])
 
@@ -123,7 +123,19 @@ def prepare_fund_data(fund_id: str, nav_df: pd.DataFrame, index_df: pd.DataFrame
         df[col] = df[col].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     fund_report = report_df[report_df["fund_id"] == fund_id].copy().sort_values("date")
-    df = df.merge(fund_report[["date", "leverage", "duration"]], on="date", how="left")
+    if not fund_report.empty:
+        fund_nav_dates = df[["date"]].drop_duplicates().sort_values("date").reset_index(drop=True)
+        aligned_report = pd.merge_asof(
+            fund_nav_dates,
+            fund_report[["date", "leverage", "duration"]].sort_values("date"),
+            on="date",
+            direction="backward",
+        )
+        df = df.merge(aligned_report, on="date", how="left")
+    else:
+        df["leverage"] = np.nan
+        df["duration"] = np.nan
+
     df["leverage_obs"] = df["leverage"]
     df["duration_obs"] = df["duration"]
 
