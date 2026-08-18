@@ -109,7 +109,7 @@ class BondFundEKF:
     观测包括：
     - 日收益观测：R_fund = w * sum(a_i * R_i) + alpha
     - 季度杠杆观测：w
-    - 半年度久期观测：sum(a_i * D_i)
+    - 半年度净值久期观测：w * sum(a_i * D_i)
     """
 
     def __init__(
@@ -222,19 +222,25 @@ class BondFundEKF:
 
     def update_duration(self, duration_obs: float):
         """
-        半年度久期观测更新：
-        z_D = sum(a_i * D_i) + eta
+        半年度净值久期观测更新：
+        z_nav = w_t * sum(a_i * D_i) + eta
         """
         self._set_observation_noise(2)
         prev_x = self.ekf.x.copy()
 
         def hx(x):
+            w = x[0]
             a = x[1:]
-            return np.array([np.dot(a, self.duration_map)], dtype=float)
+            asset_duration = np.dot(a, self.duration_map)
+            return np.array([w * asset_duration], dtype=float)
 
         def HJacobian(x):
             H = np.zeros((1, 8), dtype=float)
-            H[0, 1:] = self.duration_map
+            w = x[0]
+            a = x[1:]
+            asset_duration = np.dot(a, self.duration_map)
+            H[0, 0] = asset_duration
+            H[0, 1:] = w * self.duration_map
             return H
 
         z = np.array([duration_obs], dtype=float)
