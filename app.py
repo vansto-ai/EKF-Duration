@@ -7,7 +7,6 @@ import plotly.express as px
 import streamlit as st
 
 from src.config import (
-    ALLOCATION_COLUMNS,
     DEFAULT_DAILY_LEVERAGE_CAP,
     DEFAULT_DAILY_WEIGHT_CAP,
     DEFAULT_DURATION_MAP,
@@ -174,29 +173,32 @@ def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, du
         st.session_state.display_funds = list(funds)
 
     with st.form("display_fund_filter"):
-        st.caption("展示基金筛选（勾选后点击“应用展示筛选”）：")
-        select_all = st.checkbox("全选/取消全选", value=(set(st.session_state.display_funds) == set(funds)))
+        st.caption("展示基金筛选（多选，支持全选/清空后点击“应用展示筛选”）：")
+        selected_funds = st.multiselect(
+            "选择要展示的基金",
+            options=funds,
+            default=st.session_state.display_funds,
+            help="可手动选择所需基金，支持多选。",
+        )
 
-        if select_all:
-            candidate_funds = list(funds)
-        else:
-            candidate_funds = []
-
-        for fund in funds:
-            checked = fund in st.session_state.display_funds if not select_all else True
-            if not select_all:
-                checked = st.checkbox(fund, value=(fund in st.session_state.display_funds), key=f"display_{fund}")
-                if checked:
-                    candidate_funds.append(fund)
+        col_select, col_clear = st.columns([1, 1])
+        with col_select:
+            if st.button("全选"):
+                st.session_state.display_funds = list(funds)
+                selected_funds = list(funds)
+        with col_clear:
+            if st.button("清空选择"):
+                st.session_state.display_funds = []
+                selected_funds = []
 
         apply_clicked = st.form_submit_button("应用展示筛选")
 
     if apply_clicked:
-        st.session_state.display_funds = candidate_funds
+        st.session_state.display_funds = list(selected_funds)
 
     display_funds = list(st.session_state.display_funds)
     if not display_funds:
-        st.info("当前未选中任何基金，结果视图为空。可重新勾选基金并点击“应用展示筛选”。")
+        st.info("当前未选中任何基金，结果视图为空。可重新选择后点击“应用展示筛选”。")
         return
 
     filtered_leverage = daily_leverage_df[daily_leverage_df["fund_id"].isin(display_funds)].copy()
@@ -359,7 +361,7 @@ def main():
             cache["funds"],
         )
     else:
-        st.info("请先执行全部基金分析，随后可在此处筛选显示基金结果。")
+        st.info("请先执行全部基金分析，然后可在此处筛选显示基金结果。")
 
 
 if __name__ == "__main__":
