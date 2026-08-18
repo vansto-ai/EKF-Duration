@@ -107,7 +107,11 @@ def load_uploaded_data(nav_file, index_file, report_file):
 
 
 def prepare_fund_data(fund_id: str, nav_df: pd.DataFrame, index_df: pd.DataFrame, report_df: pd.DataFrame):
-    """为单只基金构造日度样本，并将披露观测按最近有效交易日前向对齐到净值日期。"""
+    """为单只基金构造日度样本，并仅在披露日期当天将观测值拼接到净值日期上。
+
+    注意：不要使用 asof/backward fill，否则季度末披露值会被向后长期占用，导致
+    杠杆率���久期在整个季度内被错误地钉在上一个披露值附近。
+    """
     fund_nav = nav_df[nav_df["fund_id"] == fund_id].copy()
     fund_nav["return"] = compute_daily_return(fund_nav["nav"])
 
@@ -124,14 +128,12 @@ def prepare_fund_data(fund_id: str, nav_df: pd.DataFrame, index_df: pd.DataFrame
 
     fund_report = report_df[report_df["fund_id"] == fund_id].copy().sort_values("date")
     if not fund_report.empty:
-        fund_nav_dates = df[["date"]].drop_duplicates().sort_values("date").reset_index(drop=True)
-        aligned_report = pd.merge_asof(
-            fund_nav_dates,
-            fund_report[["date", "leverage", "duration"]].sort_values("date"),
+        report_cols = ["date", "leverage", "duration"]
+        df = df.merge(
+            fund_report[report_cols],
             on="date",
-            direction="backward",
+            how="left",
         )
-        df = df.merge(aligned_report, on="date", how="left")
     else:
         df["leverage"] = np.nan
         df["duration"] = np.nan
