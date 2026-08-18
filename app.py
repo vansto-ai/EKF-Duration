@@ -169,22 +169,34 @@ def render_model_config() -> Tuple[float, float, float, float, np.ndarray]:
 
 def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df, funds):
     st.subheader("步骤4：分析结果呈现")
-    default_selected = list(funds)
-    if "selected_funds" in st.session_state:
-        default_selected = [f for f in st.session_state["selected_funds"] if f in funds]
-        if not default_selected:
-            default_selected = list(funds)
 
-    display_funds = st.multiselect(
-        "展示基金（可筛选）",
-        options=funds,
-        default=default_selected,
-        help="分析过程会同步处理全部基金，但结果可按基金筛选展示。",
-        key="selected_funds",
-    )
+    if "display_funds" not in st.session_state:
+        st.session_state.display_funds = list(funds)
 
+    with st.form("display_fund_filter"):
+        st.caption("展示基金筛选（勾选后点击“应用展示筛选”）：")
+        select_all = st.checkbox("全选/取消全选", value=(set(st.session_state.display_funds) == set(funds)))
+
+        if select_all:
+            candidate_funds = list(funds)
+        else:
+            candidate_funds = []
+
+        for fund in funds:
+            checked = fund in st.session_state.display_funds if not select_all else True
+            if not select_all:
+                checked = st.checkbox(fund, value=(fund in st.session_state.display_funds), key=f"display_{fund}")
+                if checked:
+                    candidate_funds.append(fund)
+
+        apply_clicked = st.form_submit_button("应用展示筛选")
+
+    if apply_clicked:
+        st.session_state.display_funds = candidate_funds
+
+    display_funds = list(st.session_state.display_funds)
     if not display_funds:
-        st.info("未选择任何基金，结果视图为空。当前分析结果已保留，可重新勾选基金查看。")
+        st.info("当前未选中任何基金，结果视图为空。可重新勾选基金并点击“应用展示筛选”。")
         return
 
     filtered_leverage = daily_leverage_df[daily_leverage_df["fund_id"].isin(display_funds)].copy()
@@ -333,6 +345,7 @@ def main():
                 "duration_median_df": duration_median_df,
                 "funds": funds,
             }
+            st.session_state.display_funds = list(funds)
             save_outputs(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df)
             st.success(f"分析已完成并保存到 {OUTPUT_DIR} 目录。")
 
