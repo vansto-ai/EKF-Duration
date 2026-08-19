@@ -287,13 +287,12 @@ def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, du
 
     st.subheader("3. 七档期限配置权重变化")
     area_df = filtered_alloc.melt(id_vars=["fund_id", "date"], var_name="bucket", value_name="weight")
-    fig_area = px.line(
+    fig_area = px.area(
         area_df,
         x="date",
         y="weight",
         color="bucket",
         line_group="fund_id",
-        markers=True,
         title=f"{selected_fund} 七档期限配置权重变化",
     )
     st.plotly_chart(fig_area, use_container_width=True)
