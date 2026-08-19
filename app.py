@@ -21,11 +21,54 @@ OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
-def save_outputs(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df):
+def save_outputs(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df, duration_disagreement_df=None):
     daily_leverage_df.to_csv(OUTPUT_DIR / "daily_leverage.csv", index=False)
     daily_allocation_df.to_csv(OUTPUT_DIR / "daily_allocation.csv", index=False)
     daily_duration_df.to_csv(OUTPUT_DIR / "daily_duration.csv", index=False)
     duration_median_df.to_csv(OUTPUT_DIR / "duration_median.csv", index=False)
+    if duration_disagreement_df is not None:
+        duration_disagreement_df.to_csv(OUTPUT_DIR / "duration_disagreement.csv", index=False)
+
+
+def compute_duration_disagreement_df(daily_duration_df: pd.DataFrame) -> pd.DataFrame:
+    if daily_duration_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "asset_duration_mean",
+                "asset_duration_std",
+                "asset_duration_disagreement",
+                "nav_duration_mean",
+                "nav_duration_std",
+                "nav_duration_disagreement",
+            ]
+        )
+
+    stats = (
+        daily_duration_df.groupby("date", as_index=False)
+        .agg(
+            asset_duration_mean=("asset_duration", "mean"),
+            asset_duration_std=("asset_duration", "std"),
+            nav_duration_mean=("nav_duration", "mean"),
+            nav_duration_std=("nav_duration", "std"),
+        )
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+    stats["asset_duration_disagreement"] = np.divide(
+        stats["asset_duration_std"].fillna(0.0),
+        stats["asset_duration_mean"].replace(0, np.nan).fillna(1.0),
+        out=np.zeros(len(stats), dtype=float),
+        where=np.abs(stats["asset_duration_mean"]) > 1e-12,
+    )
+    stats["nav_duration_disagreement"] = np.divide(
+        stats["nav_duration_std"].fillna(0.0),
+        stats["nav_duration_mean"].replace(0, np.nan).fillna(1.0),
+        out=np.zeros(len(stats), dtype=float),
+        where=np.abs(stats["nav_duration_mean"]) > 1e-12,
+    )
+    return stats
 
 
 def parse_observation_noise_matrix(raw_matrix) -> np.ndarray:
@@ -71,7 +114,7 @@ def process_all_funds(
         all_daily.append(fund_result)
 
     if not all_daily:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     all_daily_df = pd.concat(all_daily, ignore_index=True)
     all_daily_df = all_daily_df.sort_values(["fund_id", "date"]).reset_index(drop=True)
@@ -85,8 +128,9 @@ def process_all_funds(
         .median()
         .rename(columns={"asset_duration": "asset_duration_median", "nav_duration": "nav_duration_median"})
     )
+    duration_disagreement_df = compute_duration_disagreement_df(daily_duration_df)
 
-    return daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df
+    return daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df, duration_disagreement_df
 
 
 def render_duration_config() -> Dict[str, float]:
@@ -166,7 +210,7 @@ def render_model_config() -> Tuple[float, float, float, float, np.ndarray]:
     )
 
 
-def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df, funds):
+def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df, duration_disagreement_df, funds):
     st.subheader("步骤4：分析结果呈现")
 
     if not funds:
@@ -254,7 +298,7 @@ def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, du
     )
     st.plotly_chart(fig_area, use_container_width=True)
 
-    st.subheader("4. 日度全市场久期中位数")
+    st.subheader("4. 全市场久期中位数")
     fig_median = px.line(
         duration_median_df,
         x="date",
@@ -263,15 +307,41 @@ def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, du
         title="全市场久期中位数趋势",
     )
     st.plotly_chart(fig_median, use_container_width=True)
-    csv_data = duration_median_df.to_csv(index=False).encode("utf-8")
+    median_csv = duration_median_df.to_csv(index=False).encode("utf-8")
     st.download_button(
         label="导出全市场久期中位数 CSV",
-        data=csv_data,
+        data=median_csv,
         file_name="duration_median.csv",
         mime="text/csv",
     )
 
-    st.subheader("5. 数据表")
+    st.subheader("5. 模拟久期分歧度")
+    if duration_disagreement_df.empty:
+        st.info("当前无久期分歧度数据。")
+    else:
+        fig_disagreement = px.line(
+            duration_disagreement_df,
+            x="date",
+            y=["asset_duration_disagreement", "nav_duration_disagreement"],
+            markers=True,
+            title="模拟久期分歧度（日度久期标准差 / 日度久期均值）",
+            labels={
+                "value": "分歧度",
+                "date": "日期",
+                "variable": "久期类型",
+            },
+        )
+        fig_disagreement.update_layout(legend_title_text="久期类型")
+        st.plotly_chart(fig_disagreement, use_container_width=True)
+        disagreement_csv = duration_disagreement_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="导出模拟久期分歧度 CSV",
+            data=disagreement_csv,
+            file_name="duration_disagreement.csv",
+            mime="text/csv",
+        )
+
+    st.subheader("6. 数据表")
     st.caption(f"{selected_fund} 最新 20 条日度杠杆率与久期结果")
     st.dataframe(filtered_duration.sort_values("date").tail(20), use_container_width=True)
 
@@ -328,7 +398,7 @@ def main():
     run_analysis = st.button("执行全部基金分析", type="primary")
 
     if run_analysis:
-        daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df = process_all_funds(
+        daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df, duration_disagreement_df = process_all_funds(
             nav_df,
             index_df,
             report_df,
@@ -345,10 +415,17 @@ def main():
                 "daily_allocation_df": daily_allocation_df,
                 "daily_duration_df": daily_duration_df,
                 "duration_median_df": duration_median_df,
+                "duration_disagreement_df": duration_disagreement_df,
                 "funds": funds,
             }
             st.session_state.selected_fund = funds[0]
-            save_outputs(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df)
+            save_outputs(
+                daily_leverage_df,
+                daily_allocation_df,
+                daily_duration_df,
+                duration_median_df,
+                duration_disagreement_df=duration_disagreement_df,
+            )
             st.success(f"分析已完成并保存到 {OUTPUT_DIR} 目录。")
 
     if st.session_state.analysis_cache is not None:
@@ -358,6 +435,7 @@ def main():
             cache["daily_allocation_df"],
             cache["daily_duration_df"],
             cache["duration_median_df"],
+            cache["duration_disagreement_df"],
             cache["funds"],
         )
     else:
