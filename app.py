@@ -233,16 +233,17 @@ def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, du
     filtered_duration = daily_duration_df[daily_duration_df["fund_id"] == selected_fund].copy()
     filtered_alloc = daily_allocation_df[daily_allocation_df["fund_id"] == selected_fund].copy()
 
-    summary = (
-        filtered_duration.agg(
-            avg_leverage=("leverage", "mean"),
-            avg_asset_duration=("asset_duration", "mean"),
-            avg_nav_duration=("nav_duration", "mean"),
-        )
-        .to_frame()
-        .T
+    mean_values = filtered_duration[["leverage", "asset_duration", "nav_duration"]].mean()
+    summary = pd.DataFrame(
+        [
+            {
+                "fund_id": selected_fund,
+                "avg_leverage": float(mean_values["leverage"]),
+                "avg_asset_duration": float(mean_values["asset_duration"]),
+                "avg_nav_duration": float(mean_values["nav_duration"]),
+            }
+        ]
     )
-    summary.insert(0, "fund_id", [selected_fund])
 
     st.subheader("关键指标概览")
     c1, c2, c3 = st.columns(3)
@@ -417,7 +418,6 @@ def main():
                 "duration_disagreement_df": duration_disagreement_df,
                 "funds": funds,
             }
-            st.session_state.selected_fund = funds[0]
             save_outputs(
                 daily_leverage_df,
                 daily_allocation_df,
