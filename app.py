@@ -228,7 +228,6 @@ def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, du
         index=funds.index(st.session_state.selected_fund),
         key="selected_fund",
     )
-    st.session_state.selected_fund = selected_fund
 
     filtered_leverage = daily_leverage_df[daily_leverage_df["fund_id"] == selected_fund].copy()
     filtered_duration = daily_duration_df[daily_duration_df["fund_id"] == selected_fund].copy()
