@@ -169,115 +169,111 @@ def render_model_config() -> Tuple[float, float, float, float, np.ndarray]:
 def render_results(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df, funds):
     st.subheader("步骤4：分析结果呈现")
 
-    if "display_funds" not in st.session_state:
-        st.session_state.display_funds = list(funds)
-
-    with st.form("display_fund_filter"):
-        selected_funds = st.multiselect(
-            "选择要展示的基金",
-            options=funds,
-            default=st.session_state.display_funds,
-            help="可手动选择所需基金，支持多选。",
-        )
-
-        col_select, col_clear, col_apply = st.columns([1, 1, 2])
-        with col_select:
-            select_all_clicked = st.form_submit_button("全选")
-        with col_clear:
-            clear_clicked = st.form_submit_button("清空选择")
-        with col_apply:
-            apply_clicked = st.form_submit_button("应用展示筛选")
-
-    if select_all_clicked:
-        selected_funds = list(funds)
-        st.session_state.display_funds = list(funds)
-
-    if clear_clicked:
-        selected_funds = []
-        st.session_state.display_funds = []
-
-    if apply_clicked:
-        st.session_state.display_funds = list(selected_funds)
-
-    display_funds = list(st.session_state.display_funds)
-
-    if not display_funds:
-        st.info("当前未选中任何基金，结果视图为空。可重新选择并点击“应用展示筛选”。")
+    if not funds:
+        st.warning("当前没有可展示的基金数据。")
         return
 
-    filtered_leverage = daily_leverage_df[daily_leverage_df["fund_id"].isin(display_funds)].copy()
-    filtered_duration = daily_duration_df[daily_duration_df["fund_id"].isin(display_funds)].copy()
-    filtered_alloc = daily_allocation_df[daily_allocation_df["fund_id"].isin(display_funds)].copy()
+    if "selected_fund" not in st.session_state:
+        st.session_state.selected_fund = funds[0]
+    elif st.session_state.selected_fund not in funds:
+        st.session_state.selected_fund = funds[0]
+
+    selected_fund = st.selectbox(
+        "选择要展示的基金",
+        options=funds,
+        index=funds.index(st.session_state.selected_fund),
+        key="selected_fund",
+    )
+    st.session_state.selected_fund = selected_fund
+
+    filtered_leverage = daily_leverage_df[daily_leverage_df["fund_id"] == selected_fund].copy()
+    filtered_duration = daily_duration_df[daily_duration_df["fund_id"] == selected_fund].copy()
+    filtered_alloc = daily_allocation_df[daily_allocation_df["fund_id"] == selected_fund].copy()
 
     summary = (
-        filtered_duration.groupby("fund_id", as_index=False)
-        .agg(
+        filtered_duration.agg(
             avg_leverage=("leverage", "mean"),
             avg_asset_duration=("asset_duration", "mean"),
             avg_nav_duration=("nav_duration", "mean"),
         )
-        .sort_values("fund_id")
+        .to_frame()
+        .T
     )
+    summary.insert(0, "fund_id", [selected_fund])
 
     st.subheader("关键指标概览")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("已处理基金数", len(display_funds))
+        st.metric("当前基金", selected_fund)
     with c2:
-        st.metric("平均杠杆率", round(float(summary["avg_leverage"].mean()), 4) if not summary.empty else 0.0)
+        st.metric("平均杠杆率", round(float(summary["avg_leverage"].iloc[0]), 4) if not summary.empty else 0.0)
     with c3:
-        st.metric("平均组合久期", round(float(summary["avg_asset_duration"].mean()), 2) if not summary.empty else 0.0)
+        st.metric("平均组合久期", round(float(summary["avg_asset_duration"].iloc[0]), 2) if not summary.empty else 0.0)
 
-    st.dataframe(summary, use_container_width=True)
+    st.dataframe(summary[["fund_id", "avg_leverage", "avg_asset_duration", "avg_nav_duration"]], use_container_width=True)
 
-    st.subheader("1. 日度杠杆率对比")
+    st.subheader("1. 日度杠杆率")
     fig_leverage = px.line(
         filtered_leverage,
         x="date",
         y="leverage",
-        color="fund_id",
         markers=True,
-        title="全部基金日度杠杆率对比",
+        title=f"{selected_fund} 日度杠杆率",
     )
     fig_leverage.add_hline(1.0, line_dash="dot", line_color="gray")
     st.plotly_chart(fig_leverage, use_container_width=True)
 
     st.subheader("2. 组合久期与净值久期")
+    duration_plot_df = filtered_duration.melt(
+        id_vars=["fund_id", "date"],
+        value_vars=["asset_duration", "nav_duration"],
+        var_name="duration_type",
+        value_name="duration",
+    )
     fig_duration = px.line(
-        filtered_duration,
+        duration_plot_df,
         x="date",
-        y=["asset_duration", "nav_duration"],
-        color="fund_id",
+        y="duration",
+        color="duration_type",
         markers=True,
-        title="全部基金资产久期与净值久期",
+        title=f"{selected_fund} 组合久期与净值久期",
+        labels={"duration_type": "久期类型", "duration": "久期（年）"},
     )
     st.plotly_chart(fig_duration, use_container_width=True)
 
     st.subheader("3. 七档期限配置权重变化")
     area_df = filtered_alloc.melt(id_vars=["fund_id", "date"], var_name="bucket", value_name="weight")
-    fig_area = px.area(
+    fig_area = px.line(
         area_df,
         x="date",
         y="weight",
         color="bucket",
         line_group="fund_id",
-        title="基金期限配置权重堆积图",
+        markers=True,
+        title=f"{selected_fund} 七档期限配置权重变化",
     )
     st.plotly_chart(fig_area, use_container_width=True)
 
-    st.subheader("4. 全市场久期中位数")
+    st.subheader("4. 日度全市场久期中位数")
     fig_median = px.line(
         duration_median_df,
         x="date",
         y=["asset_duration_median", "nav_duration_median"],
         markers=True,
-        title="全部基金久期中位数趋势",
+        title="全市场久期中位数趋势",
     )
     st.plotly_chart(fig_median, use_container_width=True)
+    csv_data = duration_median_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="导出全市场久期中位数 CSV",
+        data=csv_data,
+        file_name="duration_median.csv",
+        mime="text/csv",
+    )
 
     st.subheader("5. 数据表")
-    st.caption("最新 20 条日度杠杆率与久期结果")
-    st.dataframe(filtered_duration.sort_values(["fund_id", "date"]).tail(20), use_container_width=True)
+    st.caption(f"{selected_fund} 最新 20 条日度杠杆率与久期结果")
+    st.dataframe(filtered_duration.sort_values("date").tail(20), use_container_width=True)
 
 
 def main():
@@ -304,7 +300,7 @@ def main():
         return
 
     st.sidebar.success(f"已加载 {len(funds)} 只基金，准备进入参数设置。")
-    st.sidebar.caption("执行模式：一次性处理全部基金，不逐只选择单基金运行。")
+    st.sidebar.caption("执行模式：一次性处理全部基金，结果页面按单基金下拉筛选查看。")
 
     st.subheader("步骤1：已上传数据")
     st.dataframe(
@@ -328,7 +324,7 @@ def main():
     ) = render_model_config()
 
     st.subheader("步骤3：执行分析")
-    st.info("执行前确认：全部基金会按同一参数同步计算，避免逐个基金重复选择。")
+    st.info("执行前确认：全部基金会按同一参数同步计算，分析结果在页面中由基金下拉选择查看。")
     run_analysis = st.button("执行全部基金分析", type="primary")
 
     if run_analysis:
@@ -351,7 +347,7 @@ def main():
                 "duration_median_df": duration_median_df,
                 "funds": funds,
             }
-            st.session_state.display_funds = list(funds)
+            st.session_state.selected_fund = funds[0]
             save_outputs(daily_leverage_df, daily_allocation_df, daily_duration_df, duration_median_df)
             st.success(f"分析已完成并保存到 {OUTPUT_DIR} 目录。")
 
@@ -365,7 +361,7 @@ def main():
             cache["funds"],
         )
     else:
-        st.info("请先执行全部基金分析，然后可在此处筛选显示基金结果。")
+        st.info("请先执行全部基金分析，然后可在此处按基金下拉选择结果。")
 
 
 if __name__ == "__main__":
