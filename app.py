@@ -78,8 +78,8 @@ def compute_trimmed_mean_df(daily_duration_df: pd.DataFrame, trim_pct: float = 0
     if daily_duration_df.empty:
         return pd.DataFrame(columns=["date", "asset_duration_trimmed_mean", "nav_duration_trimmed_mean"])
 
-    def trimmed_mean(values: pd.Series) -> float:
-        arr = np.asarray(values, dtype=float)
+    def trimmed_mean(values) -> float:
+        arr = np.asarray(values, dtype=float).ravel()
         if arr.size == 0:
             return np.nan
         if arr.size <= 2:
@@ -96,8 +96,8 @@ def compute_trimmed_mean_df(daily_duration_df: pd.DataFrame, trim_pct: float = 0
     grouped = (
         daily_duration_df.groupby("date", as_index=False)
         .agg(
-            asset_duration=("asset_duration", "collect"),
-            nav_duration=("nav_duration", "collect"),
+            asset_duration=("asset_duration", lambda s: s.tolist()),
+            nav_duration=("nav_duration", lambda s: s.tolist()),
         )
         .sort_values("date")
         .reset_index(drop=True)
