@@ -4,6 +4,7 @@ from filterpy.kalman import ExtendedKalmanFilter
 from scipy.optimize import minimize
 
 from src.config import (
+    DEFAULT_DAILY_DURATION_CAP,
     DEFAULT_DAILY_LEVERAGE_CAP,
     DEFAULT_DAILY_WEIGHT_CAP,
     DEFAULT_DURATION_MAP,
@@ -115,7 +116,7 @@ def _apply_report_day_constraints(
     duration_map: dict,
     trust_band: float = 0.25,
     backtrack_days: int = 5,
-    daily_duration_cap: float = 0.25,
+    daily_duration_cap: float = DEFAULT_DAILY_DURATION_CAP,
 ):
     """
     报告日强约束 + 局部回溯修正：
@@ -387,7 +388,7 @@ def estimate_daily_fund_states(
     observation_noise_matrix=None,
     leverage_daily_cap: float = DEFAULT_DAILY_LEVERAGE_CAP,
     weight_daily_cap: float = DEFAULT_DAILY_WEIGHT_CAP,
-    daily_duration_cap: float = 0.25,
+    daily_duration_cap: float = DEFAULT_DAILY_DURATION_CAP,
     report_day_trust_band: float = 0.25,
     report_backtrack_days: int = 5,
 ):
