@@ -61,6 +61,121 @@ def solve_entropy_initial_weights(target_duration: float, duration_map: dict, ep
     return np.full(n, 1.0 / n)
 
 
+def _project_weights_to_target_duration(weights: np.ndarray, duration_map: dict, target_asset_duration: float):
+    """在保持 sum(weights)=1, w_i>=0 的前提下，把权重投影到目标组合久期附近。"""
+    weights = np.asarray(weights, dtype=float).copy()
+    if weights.size == 0:
+        return weights
+
+    duration_vector = np.asarray(list(duration_map.values()), dtype=float)
+    weights = np.clip(weights, 1e-12, None)
+    weights = weights / weights.sum()
+
+    target_asset_duration = float(target_asset_duration)
+    if not np.isfinite(target_asset_duration):
+        return weights
+    if target_asset_duration < duration_vector.min() or target_asset_duration > duration_vector.max():
+        return weights
+
+    def objective(a):
+        return float(np.sum((a - weights) ** 2))
+
+    constraints = [
+        {"type": "eq", "fun": lambda a: np.sum(a) - 1.0},
+        {"type": "eq", "fun": lambda a: np.dot(a, duration_vector) - target_asset_duration},
+    ]
+    bounds = [(1e-12, None)] * len(weights)
+    x0 = weights.copy()
+
+    try:
+        result = minimize(
+            objective,
+            x0,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"maxiter": 500, "ftol": 1e-10},
+        )
+        if result.success and np.all(np.isfinite(result.x)):
+            adjusted = np.clip(result.x, 1e-12, None)
+            adjusted = adjusted / adjusted.sum()
+            return adjusted
+    except Exception:
+        pass
+
+    return weights
+
+
+def _apply_report_day_constraints(
+    rows: list,
+    duration_map: dict,
+    trust_band: float = 0.25,
+    backtrack_days: int = 5,
+    daily_duration_cap: float = 0.25,
+):
+    """
+    报告日强约束 + 局部回溯修正：
+    1) 若报告日模拟久期与观测久期偏离超过 trust_band，则调整权重使其回落到信任区间内；
+    2) 若该报告日触发了修正，则检查前 backtrack_days 个交易日，并确保其状态变动不超过 daily_duration_cap。
+    """
+    if not rows:
+        return rows
+
+    result = [row.copy() for row in rows]
+    duration_values = np.asarray(list(duration_map.values()), dtype=float)
+
+    trigger_indices = []
+    for idx, row in enumerate(result):
+        duration_obs = row.get("_duration_obs")
+        if pd.notna(duration_obs):
+            current_nav_duration = float(row.get("nav_duration", 0.0))
+            if abs(current_nav_duration - float(duration_obs)) > trust_band:
+                trigger_indices.append(idx)
+
+    for trigger_idx in trigger_indices:
+        start_idx = max(0, trigger_idx - backtrack_days)
+        # 先修正报告日本身：把当前久期拉回到观测值附近，但不超过 trust_band
+        trigger_row = result[trigger_idx]
+        duration_obs = trigger_row.get("_duration_obs")
+        if pd.notna(duration_obs):
+            leverage = float(trigger_row.get("leverage", 1.0))
+            target_nav_duration = float(duration_obs)
+            if leverage > 0:
+                target_asset_duration = target_nav_duration / leverage
+                weight_keys = list(duration_map.keys())
+                current_weights = np.array([trigger_row[f"{key}_weight"] for key in weight_keys], dtype=float)
+                new_weights = _project_weights_to_target_duration(current_weights, duration_map, target_asset_duration)
+                for key, w in zip(weight_keys, new_weights):
+                    trigger_row[f"{key}_weight"] = float(w)
+                trigger_row["asset_duration"] = float(np.dot(new_weights, duration_values))
+                trigger_row["nav_duration"] = float(leverage * trigger_row["asset_duration"])
+                trigger_row["leverage"] = leverage
+
+        # 然后逐步检查并修正回溯窗口中的状态变化
+        for idx in range(start_idx + 1, trigger_idx + 1):
+            current_row = result[idx]
+            prev_row = result[idx - 1]
+            prev_nav_duration = float(prev_row.get("nav_duration", 0.0))
+            curr_nav_duration = float(current_row.get("nav_duration", 0.0))
+            if abs(curr_nav_duration - prev_nav_duration) > daily_duration_cap:
+                leverage = float(current_row.get("leverage", 1.0))
+                desired_nav_duration = prev_nav_duration + np.sign(curr_nav_duration - prev_nav_duration) * daily_duration_cap
+                desired_asset_duration = desired_nav_duration / leverage if leverage > 0 else desired_nav_duration
+                weight_keys = list(duration_map.keys())
+                current_weights = np.array([current_row[f"{key}_weight"] for key in weight_keys], dtype=float)
+                new_weights = _project_weights_to_target_duration(current_weights, duration_map, desired_asset_duration)
+                for key, w in zip(weight_keys, new_weights):
+                    current_row[f"{key}_weight"] = float(w)
+                current_row["asset_duration"] = float(np.dot(new_weights, duration_values))
+                current_row["nav_duration"] = float(leverage * current_row["asset_duration"])
+
+    cleaned = []
+    for row in result:
+        clean = {k: v for k, v in row.items() if not k.startswith("_")}
+        cleaned.append(clean)
+    return cleaned
+
+
 def project_state(
     x: np.ndarray,
     prev_x: np.ndarray | None = None,
@@ -108,8 +223,8 @@ class BondFundEKF:
     状态 x = [w, a1, a2, ..., a7]
     观测包括：
     - 日收益观测：R_fund = w * sum(a_i * R_i) + alpha
-    - 季度杠杆观测：w
-    - 半年度净值久期观测：w * sum(a_i * D_i)
+    - 杠杆观测：w
+    - 净值久期观测：w * sum(a_i * D_i)
     """
 
     def __init__(
@@ -202,7 +317,7 @@ class BondFundEKF:
 
     def update_leverage(self, leverage_obs: float):
         """
-        季度杠杆率观测更新：
+        杠杆率观测更新：
         z_w = w_t + eta
         """
         self._set_observation_noise(1)
@@ -222,7 +337,7 @@ class BondFundEKF:
 
     def update_duration(self, duration_obs: float):
         """
-        半年度净值久期观测更新：
+        净值久期观测更新：
         z_nav = w_t * sum(a_i * D_i) + eta
         """
         self._set_observation_noise(2)
@@ -270,13 +385,14 @@ def estimate_daily_fund_states(
     observation_noise_matrix=None,
     leverage_daily_cap: float = DEFAULT_DAILY_LEVERAGE_CAP,
     weight_daily_cap: float = DEFAULT_DAILY_WEIGHT_CAP,
+    daily_duration_cap: float = 0.25,
+    report_day_trust_band: float = 0.25,
+    report_backtrack_days: int = 5,
 ):
     """
-    对单个基金执行完整的日度 EKF 滤波估计。
-    重点：
-    - 先 predict
-    - 再 update 今日收益
-    - 若当天有季度报告或半年久期，则额外执行观测更新
+    对单个基金执行完整的日度 EKF 滤波估计，并加入：
+    - 报告日强约束：若模拟久期与观测久期偏离超过 trust band，则调权重校正；
+    - 局部回溯：若报告日触发校正，则仅回溯前 5 个交易日，保证其久期变化不超过 daily_duration_cap。
     """
     model = BondFundEKF(
         duration_map=duration_map,
@@ -289,6 +405,9 @@ def estimate_daily_fund_states(
     )
 
     rows = []
+
+def _as_float(value):
+    return float(value) if pd.notna(value) else np.nan
 
     for _, row in fund_df.iterrows():
         model.predict()
@@ -317,24 +436,40 @@ def estimate_daily_fund_states(
             model.update_duration(float(duration_obs))
 
         state = model.current_state()
-        rows.append(
-            {
-                "fund_id": row["fund_id"],
-                "date": row["date"],
-                "leverage": state["leverage"],
-                "asset_duration": state["asset_duration"],
-                "nav_duration": state["nav_duration"],
-                "0_1Y_weight": state["weights"][0],
-                "1_3Y_weight": state["weights"][1],
-                "3_5Y_weight": state["weights"][2],
-                "5_7Y_weight": state["weights"][3],
-                "7_10Y_weight": state["weights"][4],
-                "10_25Y_weight": state["weights"][5],
-                "30Y_weight": state["weights"][6],
-            }
-        )
+        record = {
+            "fund_id": row["fund_id"],
+            "date": row["date"],
+            "leverage": state["leverage"],
+            "asset_duration": state["asset_duration"],
+            "nav_duration": state["nav_duration"],
+        }
+        for key, value in zip(duration_map.keys(), state["weights"]):
+            record[f"{key}_weight"] = float(value)
 
-    return pd.DataFrame(rows)
+        record["_duration_obs"] = np.nan if pd.isna(duration_obs) else float(duration_obs)
+        rows.append(record)
+
+    rows = _apply_report_day_constraints(
+        rows,
+        duration_map=duration_map,
+        trust_band=report_day_trust_band,
+        backtrack_days=report_backtrack_days,
+        daily_duration_cap=daily_duration_cap,
+    )
+
+    cleaned = []
+    for row in rows:
+        cleaned_row = {
+            "fund_id": row["fund_id"],
+            "date": row["date"],
+            "leverage": row["leverage"],
+            "asset_duration": row["asset_duration"],
+            "nav_duration": row["nav_duration"],
+        }
+        for key in duration_map.keys():
+            cleaned_row[f"{key}_weight"] = row[f"{key}_weight"]
+        cleaned.append(cleaned_row)
+    return pd.DataFrame(cleaned)
 
 
 def get_initial_duration_from_report(report_df: pd.DataFrame, duration_map: dict):
