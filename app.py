@@ -7,6 +7,7 @@ import plotly.express as px
 import streamlit as st
 
 from src.config import (
+    DEFAULT_DAILY_DURATION_CAP,
     DEFAULT_DAILY_LEVERAGE_CAP,
     DEFAULT_DAILY_WEIGHT_CAP,
     DEFAULT_DURATION_MAP,
@@ -90,6 +91,7 @@ def process_all_funds(
     observation_noise_matrix=None,
     leverage_daily_cap: float = DEFAULT_DAILY_LEVERAGE_CAP,
     weight_daily_cap: float = DEFAULT_DAILY_WEIGHT_CAP,
+    daily_duration_cap: float = DEFAULT_DAILY_DURATION_CAP,
 ):
     if duration_map is None:
         duration_map = DEFAULT_DURATION_MAP.copy()
@@ -110,6 +112,7 @@ def process_all_funds(
             observation_noise_matrix=observation_noise_matrix,
             leverage_daily_cap=leverage_daily_cap,
             weight_daily_cap=weight_daily_cap,
+            daily_duration_cap=daily_duration_cap,
         )
         all_daily.append(fund_result)
 
@@ -152,7 +155,7 @@ def render_duration_config() -> Dict[str, float]:
     return duration_map
 
 
-def render_model_config() -> Tuple[float, float, float, float, np.ndarray]:
+def render_model_config() -> Tuple[float, float, float, float, float, np.ndarray]:
     st.subheader("步骤2：参数设置 - EKF 模型参数")
 
     leverage_process_noise = st.number_input(
@@ -187,6 +190,14 @@ def render_model_config() -> Tuple[float, float, float, float, np.ndarray]:
         step=1e-4,
         format="%.4f",
     )
+    daily_duration_cap = st.number_input(
+        "每日久期最大变化约束",
+        min_value=0.0,
+        max_value=10.0,
+        value=float(DEFAULT_DAILY_DURATION_CAP),
+        step=0.01,
+        format="%.2f",
+    )
 
     default_obs_df = pd.DataFrame(
         DEFAULT_OBSERVATION_NOISE_MATRIX,
@@ -206,6 +217,7 @@ def render_model_config() -> Tuple[float, float, float, float, np.ndarray]:
         float(weight_process_noise),
         float(leverage_daily_cap),
         float(weight_daily_cap),
+        float(daily_duration_cap),
         observation_noise_matrix,
     )
 
@@ -389,6 +401,7 @@ def main():
         weight_process_noise,
         leverage_daily_cap,
         weight_daily_cap,
+        daily_duration_cap,
         observation_noise_matrix,
     ) = render_model_config()
 
@@ -407,6 +420,7 @@ def main():
             observation_noise_matrix=observation_noise_matrix,
             leverage_daily_cap=leverage_daily_cap,
             weight_daily_cap=weight_daily_cap,
+            daily_duration_cap=daily_duration_cap,
         )
         if not daily_leverage_df.empty:
             st.session_state.analysis_cache = {
