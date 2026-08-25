@@ -13,6 +13,10 @@ from src.config import (
 )
 
 
+def _as_float(value):
+    return float(value) if pd.notna(value) else np.nan
+
+
 def solve_entropy_initial_weights(target_duration: float, duration_map: dict, eps: float = 1e-12):
     """
     最小熵初始化：
@@ -134,7 +138,6 @@ def _apply_report_day_constraints(
 
     for trigger_idx in trigger_indices:
         start_idx = max(0, trigger_idx - backtrack_days)
-        # 先修正报告日本身：把当前久期拉回到观测值附近，但不超过 trust_band
         trigger_row = result[trigger_idx]
         duration_obs = trigger_row.get("_duration_obs")
         if pd.notna(duration_obs):
@@ -151,7 +154,6 @@ def _apply_report_day_constraints(
                 trigger_row["nav_duration"] = float(leverage * trigger_row["asset_duration"])
                 trigger_row["leverage"] = leverage
 
-        # 然后逐步检查并修正回溯窗口中的状态变化
         for idx in range(start_idx + 1, trigger_idx + 1):
             current_row = result[idx]
             prev_row = result[idx - 1]
@@ -405,10 +407,6 @@ def estimate_daily_fund_states(
     )
 
     rows = []
-
-def _as_float(value):
-    return float(value) if pd.notna(value) else np.nan
-
     for _, row in fund_df.iterrows():
         model.predict()
 
