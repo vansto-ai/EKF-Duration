@@ -1,7 +1,17 @@
 import numpy as np
 import pandas as pd
 
+from pandas.tseries.offsets import BDay
+
 from src.config import DEFAULT_DURATION_MAP, INDEX_COLUMNS
+
+
+def _to_previous_business_day(ts):
+    """把日期对齐到最近的一个交易日，避免半年末/节假日被错误地当作净值日期。"""
+    if pd.isna(ts):
+        return pd.NaT
+    ts = pd.Timestamp(ts)
+    return pd.Timestamp(BDay().rollback(ts)).normalize()
 
 
 def _normalize_index_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -86,6 +96,15 @@ def _normalize_leverage_ratio(series: pd.Series) -> pd.Series:
     return s
 
 
+def _normalize_report_dates(report_df: pd.DataFrame) -> pd.DataFrame:
+    """把披露日期映射到最近的一个交易日，避免半年末/节假日数据错配。"""
+    out = report_df.copy()
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out = out.dropna(subset=["date"]).copy()
+    out["date"] = out["date"].apply(_to_previous_business_day)
+    return out
+
+
 def load_uploaded_data(nav_file, index_file, report_file):
     """读取上传的三个 CSV 文件，并进行基本清理与类型转换。"""
     nav_df = pd.read_csv(nav_file)
@@ -95,6 +114,7 @@ def load_uploaded_data(nav_file, index_file, report_file):
     nav_df = _clean_date_column(nav_df)
     index_df = _clean_date_column(_normalize_index_columns(index_df))
     report_df = _clean_date_column(report_df)
+    report_df = _normalize_report_dates(report_df)
 
     nav_df = nav_df[["fund_id", "date", "nav"]].dropna().sort_values(["fund_id", "date"]).reset_index(drop=True)
     index_df = index_df[["date"] + INDEX_COLUMNS].dropna().sort_values("date").reset_index(drop=True)
@@ -110,7 +130,7 @@ def prepare_fund_data(fund_id: str, nav_df: pd.DataFrame, index_df: pd.DataFrame
     """为单只基金构造日度样本，并仅在披露日期当天将观测值拼接到净值日期上。
 
     注意：不要使用 asof/backward fill，否则季度末披露值会被向后长期占用，导致
-    杠杆率���久期在整个季度内被错误地钉在上一个披露值附近。
+    杠杆率和久期在整个季度内被错误地钉在上一个披露值附近。
     """
     fund_nav = nav_df[nav_df["fund_id"] == fund_id].copy()
     fund_nav["return"] = compute_daily_return(fund_nav["nav"])
@@ -127,6 +147,7 @@ def prepare_fund_data(fund_id: str, nav_df: pd.DataFrame, index_df: pd.DataFrame
         df[col] = df[col].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     fund_report = report_df[report_df["fund_id"] == fund_id].copy().sort_values("date")
+    fund_report = _normalize_report_dates(fund_report)
     if not fund_report.empty:
         report_cols = ["date", "leverage", "duration"]
         df = df.merge(
