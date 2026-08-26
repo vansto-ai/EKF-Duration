@@ -179,6 +179,31 @@ def _apply_report_day_constraints(
     return cleaned
 
 
+def _enforce_report_day_trust_band(model, duration_obs: float, duration_map: dict, trust_band: float = 0.25):
+    """把观测久期真正写回 EKF 状态，而不是只在输出表格中后处理。"""
+    if duration_obs is None or not np.isfinite(duration_obs):
+        return
+
+    state = model.current_state()
+    sim_nav_duration = float(state["nav_duration"])
+    diff = abs(sim_nav_duration - float(duration_obs))
+    if diff <= trust_band:
+        return
+
+    leverage = float(state["leverage"])
+    if leverage <= 0:
+        return
+
+    target_asset_duration = float(duration_obs) / leverage
+    weight_keys = list(duration_map.keys())
+    current_weights = np.array([model.ekf.x[1 + i] for i in range(len(weight_keys))], dtype=float)
+    new_weights = _project_weights_to_target_duration(current_weights, duration_map, target_asset_duration)
+
+    model.ekf.x[1:] = new_weights
+    model.ekf.x[0] = leverage
+    model._project_state(prev_x=None)
+
+
 def project_state(
     x: np.ndarray,
     prev_x: np.ndarray | None = None,
@@ -433,6 +458,12 @@ def estimate_daily_fund_states(
         duration_obs = row.get("duration_obs")
         if pd.notna(duration_obs):
             model.update_duration(float(duration_obs))
+            _enforce_report_day_trust_band(
+                model=model,
+                duration_obs=float(duration_obs),
+                duration_map=duration_map,
+                trust_band=report_day_trust_band,
+            )
 
         state = model.current_state()
         record = {
